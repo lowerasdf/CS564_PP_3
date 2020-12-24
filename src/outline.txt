@@ -1,0 +1,16 @@
+ * Group Members:
+ * - Bloomest Chandra (9079689528, bjchandra@wisc.edu)
+ * - Mei Sun(9081669823, msun252@wisc.edu)
+ * - Nan Sun(9079796265, nsun25@wisc.edu)
+
+Please check report.txt for design report.
+
+- All the tests can be found in the main.cpp
+- What to test:
+    1. myTest1_LargeRelationForward(): Testing whether it is working for larger size of tuples when creating a relation forward
+    2. myTest2_LargeRelationBackward(): Testing whether it is working for larger size of tuples when creating a relation backward 
+    3. myTest3_LargeRelationRandom(): Testing whether it is working for larger size of tuples when creating a relation random
+    4. myTest4_Empty(): Testing whether it is working for empty relations
+    5. myTest5_NegativeForward(): Testing whether it is working for negative values of tuples when creating a relation forward 
+    6. myTest6_NegativeBackward(): Testing whether it is working for negative values of tuples when creating a relation backward
+

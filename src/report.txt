@@ -1,0 +1,124 @@
+Design Report
+-----------------------------------------------------------------------------
+
+Summary
+-----------------------------------------------------------------------------
+Our design of the node struture helps us to distinguish when is to insert a inner and a leaf node, and when to split appropriately. 
+The property we add, such as level and size, helps us to track each node's condition for the further insertion and scan.
+Helper method insertLeafNode and insertNonLeafNode are used to distinguish insertion process. 
+insertEntryHelper method is used for recursive call for insert.
+The Scan part handles all exceptions mentioned in introduction file.
+We add tests to test some edge cases, such as larger size and negative vals.
+
+Constructor
+-----------------------------------------------------------------------------
+1. initialize the private values of the BTreeIndex class including bufMgr, attrByteOffset, attributeType, leafOccupancy, nodeOccupancy, scanExecuting.
+2. constructing the index file name
+3. Try to open the index file with the given name by calling: file = new BlobFile(outIndexName, false):
+    - if it works, it indicated that the file exists, then read and cast it
+    - if it does not work, it will catch the FileNotFoundException which indicated that the file does not exist. Then we need to create a new one, initialize it and create a file scanner to inserting the tuples into the tree.
+
+
+Destructor
+-----------------------------------------------------------------------------
+1. Stop the ongoing scanExcuting by calling endScan().
+2. Flush the index file from the buffer manager by calling flushFile().
+3. Delete the object file.
+
+Insert
+-----------------------------------------------------------------------------
+In order to know whether a node is a leaf or not, we added a constant field on and on NonLeafNodeInt. It will be 1 if the node is on the level just about of leaf node, otherwise it will be zero. We also added a helper function that checks directly on its level. 
+
+In order to tell if a node is full or not, we added a new field on LeafNodeInt and NonLeafNodeInt structs called "size" that will be updated everytime there is an insert or a split (more on split later). A non-leaf node can be considered full if and only if the size == INTARRAYNONLEAFSIZE, where split is needed in this case. This goes for leaf node as well with INTARRAYLEAFSIZE.
+
+There is a helper function called insertEntryHelper that takes 6 parameters (key to be inserted, rid to be inserted, current page id / node, 2 callback pointers, and one to tell if it will be a leafnode or not) to do the recursion such that by this, we can passed in a callback pointer such that the node can return multiple values, which is important in this case, because we'd like to be able to get the middle value as well as the pageID of the newly created child node without further I/O. The other workaround might be just returning the pageID, but this way, we have to re-read the page again, which is redundant. These 2 return values have a special case, which is when it is 0, meaning that there is no split in the child / recursive call, such that the right cases can be handled correctly.
+
+When to pin and unpin will be described on each insertion flow below depending on the cases, but in general, the pin only occurs when the node is visited, and it will be unpinned right after the node has finished their execution or stack.
+
+The insertion flow at root level goes like this:
+1. insertEntry is called.
+2. insertEntry calls insertEntryHelper with root as the first pageID, as well as asigning the callback in case a root is splitted. Key will be passed as an integer instead of void*.
+3. if there is a split on the child (indicated by the callback parameters = 0), split the root into 2 by allocating a new page, update the arrays appropriately, and unpin and update the indexMetaInfo appropriately.
+
+The insertion flow at non-leaf level goes like this:
+1. insertEntryHelper is called from its parent.
+2. Read the node as it's stored on a page.
+3. Check if it's a leaf, and in this case, it's not.
+4. Find the correct child according to the given key by first finding the index and using the index to pageNoArray array.
+5. Recursive call, while providing a hook to retrieve the middle value and newly created node's pageID.
+6. There are 2 cases here:
+	a. There is no split on child node:
+		- Unpin the page as it will no longer be needed with dirty bit = false.
+		- Pass the callback the 2 values appropriately, which is just 0.
+	b. There is a split:
+		- Find the index of the new middle key from children to be inserted.
+		- Allocate a new page for the right split.
+		- Check if node is not full, if true directly insert middle key to the node by using a helper function insertLeafNode:
+			1. First, shift the elements of the arrays from the index to the right.
+			2. Then, insert the new key and rid appropriately.
+			3. Lastly, increment current size.
+			4. (this is outside the helper function) unpin the page with dirty bit = true, then pass back both 0 as before. 
+		- If node is full, split the node into half and push the middle value depending on the case of a mid value, which is INTARRAYNONLEAFSIZE / 2, where if it's the case, we can just push the child value:
+			1. If index == mid:
+				a. Index will be pushed to the parent, so if it's even, just split evenly, and if's odd, make sure it splits into m and m+1, where m is INTARRAYNONLEAFSIZE/2 rounded by integer rounding.
+			2. If index != mid:
+				a. Push the middle value to the parent using the callback pointers
+				b. This is depends on INTARRAYNONLEAFSIZE the where if it is even, split exactly in the middle. If it is odd, then it depends on whether the newly inserted value will be on the left or on the right node, so split m to m+1 or m+1 to m appropriately when m = INTARRAYNONLEAFSIZE / 2.
+				c. Insert the new key and child appropriately depending on the position of the index as described before.
+			3. After that, update size appropriately and unpin the page with dirty bit = true.
+			4. Return or pass back the pointers of the appropriate middle value and newly created pageID
+			
+
+The insertion flow at leaf level goes like this:
+1. insertEntryHelper is called from its parent.
+2. Read the node as it's stored on a page.
+3. Check if it's a leaf, and in this case, it is a leaf node, which is the base case.
+4. Find the index of the key to be inserted.
+5. There are 2 cases depending on whether the leaf node is full or not:
+	a. leaf node is not full:
+		- Do the same as non-leaf node to insert directly to the node, where it calls the helper function insertLeafNode with similar behavior, just dealing with different arrays.
+		- Instead of unpin with dirty = false, this time unpin with true.
+		- Pass back 0 to the two callback pointers.
+	b. leaf node is full:
+		- As before, do the split by first allocate a new page.
+		- The split also depends on whether INTARRAYLEAFSIZE is odd or even, and whether index < middle value or not as if it's even, then splitting into half will guarantee that after insertion, both splits have m and m+1 or m+1 and m keys, where m is INTARRAYLEAFSIZE / 2. If's odd, it has to make sure that the split doesn't go m and m+2 or m+2 and m keys, but instead m+1 and m+1 keys after insertion.
+		- After split, insert the new key and rid appropriately as described before.
+		- Update size appropriately and unpin the page with dirty bit = true.
+		- Return or pass back the pointers of the appropriate middle value and newly created pageID
+
+This implementation ensures that it minimizes the number of I/O as we only read page once (traveresed once) and unpin it as soon as the it has finished executing and returned the callback pointers back to the parent. Also, the use of size and level fields, we also minimized the number of complexity to check whether a node is a leaf or not or whether it's full or not.
+
+Scan
+-----------------------------------------------------------------------------
+StartScan has following steps:
+	1. throw exception if the parameter does not follow the rule: only support GT and GTE for lowOp, support LT and LTE for highOp, lowValue should less or equal to highValue
+	2. set scanExecuting status to true
+	3. store value for lowValInt, highValInt, lowOp, highOp
+	4. read current page into the buffer
+	5. loop through to find node of the next level and unpin the node of previous level, until the reach the leafnode level 
+	6. loop through leaf node keys. 
+		a. If does not find in the current node, go to the next leaf node, unpin the current node and read the next node into the buffer
+		b. If no matching key is found, unpin the page and throw NoSuchKeyFoundException
+	7. store the start point in nextEntry
+
+ScanNext has following steps:
+	1. check if scanExecuting is true, throw ScanNotInitializedException if not 
+	2. check if current key is in range
+	3. update the nextEntry
+	4. check if the nextEntry is valid
+		a. if nextEntry is not on current node, go check next node, unpin current node, and read the next page
+		b. throw IndexScanCompletedException if not found next valid insertEntry
+
+EndScan will throw ScanNotInitializedException if scanExecuting is false, set scanExecuting to false, and unpin the page
+
+
+
+Test Cases
+-----------------------------------------------------------------------------
+    1. myTest1_LargeRelationForward(): Testing whether it is working for larger size of tuples by creating a relation forward with large size of tuples and performing index tests 
+    2. myTest2_LargeRelationBackward(): Testing whether it is working for larger size of tuples by creating a relation backward with large size of tuples and performing index tests 
+    3. myTest3_LargeRelationRandom(): Testing whether it is working for larger size of tuples by creating a relation random with large size of tuples and performing index tests 
+    4. myTest4_Empty(): Testing whether it is working for empty relations by creating an empty relation and performing index tests 
+    5. myTest5_NegativeForward(): Testing whether it is working for negative values of tuples by creating a relation forward and performing index tests 
+    6. myTest6_NegativeBackward(): Testing whether it is working for negative values of tuples by creating a relation backward and performing index tests 
+
